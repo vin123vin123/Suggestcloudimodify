@@ -45,7 +45,7 @@ def init_mongo(uri):
 
 client = init_mongo(MONGO_URI)
 db = client['cloudi'] if client else None
-collection = db.imagescloudi if db is not None else None
+collection = db.imagescloudi
 
 # -----------------------------------------------------------------------------
 # 2. MAIN APPLICATION INTERFACE
