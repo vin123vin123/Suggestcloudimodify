@@ -1,5 +1,6 @@
 import streamlit as st
-import pymongo
+from pymongo import MongoClient
+
 from cloudinary import CloudinaryImage
 import cloudinary.uploader
 import cloudinary.api
