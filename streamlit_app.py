@@ -1,63 +1,70 @@
 import streamlit as st
+import pymongo
 from pymongo import MongoClient
-
+import cloudinary
 from cloudinary import CloudinaryImage
 import cloudinary.uploader
 import cloudinary.api
 import os
 
 # -----------------------------------------------------------------------------
-# 1. DATABASE & CLOUD CONFIGURATION
+# 1. SETUP / CONFIGURATION DICTIONARY
 # -----------------------------------------------------------------------------
-# Replace these strings or configure via Streamlit Secrets / Environment Variables
-MONGO_URI = st.sidebar.text_input("MongoDB Connection URI", value="mongodb://localhost:27017/", type="password")
-DB_NAME = st.sidebar.text_input("MongoDB Database Name", value="image_gallery")
-COLLECTION_NAME = st.sidebar.text_input("MongoDB Collection Name", value="metadata")
+# 💡 Best Practice: Populate these variables directly, or map them to your system env variables.
+CONFIG = {
+    "MONGO_URI": os.environ.get("MONGO_URI", "mongodb://localhost:27017/"),
+    "DB_NAME": os.environ.get("DB_NAME", "image_gallery"),
+    "COLLECTION_NAME": os.environ.get("COLLECTION_NAME", "metadata"),
+    
+    "CLOUDINARY_CLOUD_NAME": os.environ.get("CLOUDINARY_CLOUD_NAME", "your_cloud_name"),
+    "CLOUDINARY_API_KEY": os.environ.get("CLOUDINARY_API_KEY", "your_api_key"),
+    "CLOUDINARY_API_SECRET": os.environ.get("CLOUDINARY_API_SECRET", "your_api_secret"),
+}
 
-st.sidebar.markdown("---")
-CLOUDINARY_CLOUD_NAME = st.sidebar.text_input("Cloudinary Cloud Name", value="")
-CLOUDINARY_API_KEY = st.sidebar.text_input("Cloudinary API Key", value="", type="password")
-CLOUDINARY_API_SECRET = st.sidebar.text_input("Cloudinary API Secret", value="", type="password")
+# Streamlit secrets override fallback (if deployed on Streamlit Cloud)
+if "MONGO_URI" in st.secrets:
+    CONFIG.update(st.secrets)
 
-# Initialize Cloudinary Configuration dynamically if provided
-if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+# -----------------------------------------------------------------------------
+# 2. INITIALIZE SERVICES VIA CONFIG
+# -----------------------------------------------------------------------------
+# Initialize Cloudinary
+if CONFIG["CLOUDINARY_CLOUD_NAME"] and CONFIG["CLOUDINARY_API_KEY"] and CONFIG["CLOUDINARY_API_SECRET"]:
     cloudinary.config(
-        cloud_name=CLOUDINARY_CLOUD_NAME,
-        api_key=CLOUDINARY_API_KEY,
-        api_secret=CLOUDINARY_API_SECRET,
+        cloud_name=CONFIG["CLOUDINARY_CLOUD_NAME"],
+        api_key=CONFIG["CLOUDINARY_API_KEY"],
+        api_secret=CONFIG["CLOUDINARY_API_SECRET"],
         secure=True
     )
+elif os.environ.get('CLOUDINARY_URL'):
+    cloudinary.config(cloudinary_url=os.environ.get('CLOUDINARY_URL'))
 
-CLOUDINARY_URL = os.environ.get('CLOUDINARY_URL')
-if CLOUDINARY_URL:
-    cloudinary.config(cloudinary_url=CLOUDINARY_URL)
-    print("cloudi... con...estblsh..")
 # Establish MongoDB Connection
 @st.cache_resource
 def init_mongo(uri):
     try:
-        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=2000)
-        # Test connection
-        client.server_info()
+        client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+        client.server_info()  # Test connection health
         return client
     except Exception as e:
-        st.sidebar.error(f"MongoDB Connection failed: {e}")
+        st.error(f"❌ MongoDB Connection failed: {e}")
         return None
 
-client = init_mongo(MONGO_URI)
-db = client['cloudi'] 
-collection = db.imagescloudi
+client = init_mongo(CONFIG["MONGO_URI"])
+
+if client:
+    db = client[CONFIG["DB_NAME"]] 
+    collection = db[CONFIG["COLLECTION_NAME"]]
+else:
+    collection = None
 
 # -----------------------------------------------------------------------------
-# 2. MAIN APPLICATION INTERFACE
+# 3. MAIN APPLICATION INTERFACE
 # -----------------------------------------------------------------------------
-st.title("🖼️ Cloudinary & MongoDB Image Studio")
+st.title(" 🖼️ Cloudinary & MongoDB Image Studio")
 st.markdown("Query existing asset records from **MongoDB**, and apply real-time on-the-fly transformations using **Cloudinary URLs**.")
 
-if not CLOUDINARY_CLOUD_NAME:
-    st.info("Please fill in your Cloudinary configurations in the sidebar to start mutating images.")
-
-# Layout: Split page into Sidebar Management and Workspace
+# Setup clean tabs layout
 tabs = st.tabs(["✨ Asset Workspace", "📤 Upload New Asset", "📋 View Database Records"])
 
 # -----------------------------------------------------------------------------
@@ -68,7 +75,6 @@ with tabs[0]:
     
     if collection is not None:
         try:
-            # Fetch available asset options from DB to select from
             records = list(collection.find({}, {"public_id": 1, "title": 1, "_id": 0}))
             
             if records:
@@ -76,7 +82,6 @@ with tabs[0]:
                 selected_label = st.selectbox("Select an Image Asset from MongoDB:", list(asset_options.keys()))
                 selected_public_id = asset_options[selected_label]
                 
-                # Fetch complete document from MongoDB
                 img_metadata = collection.find_one({"public_id": selected_public_id})
                 
                 col1, col2 = st.columns([1, 1])
@@ -84,24 +89,18 @@ with tabs[0]:
                 with col1:
                     st.markdown("### ⚙️ Transformation Controls")
                     
-                    # Aspect Ratio & Crop options
                     crop_mode = st.selectbox("Crop Mode", ["fill", "scale", "fit", "thumb", "pad"])
                     width = st.slider("Width (px)", min_value=100, max_value=1200, value=600, step=50)
                     height = st.slider("Height (px)", min_value=100, max_value=1200, value=400, step=50)
                     
-                    # Creative Effects
                     effect = st.selectbox("Visual Effects", [
                         "none", "grayscale", "sepia", "blur:300", "vignette", 
                         "negate", "oil_paint:40", "pixelate:10", "cartoonify"
                     ])
                     
-                    # Background manipulation for padding
                     background = st.selectbox("Background Pad Color", ["none", "black", "white", "red", "blue"])
                     
-                    # Formulate transformation list dynamically based on parameters
-                    transformation_list = [
-                        {"width": width, "height": height, "crop": crop_mode}
-                    ]
+                    transformation_list = [{"width": width, "height": height, "crop": crop_mode}]
                     
                     if effect != "none":
                         transformation_list.append({"effect": effect})
@@ -110,21 +109,15 @@ with tabs[0]:
                         
                 with col2:
                     st.markdown("### 🌅 Live Dynamic Output")
-                    
-                    # Generate secure variant link with Cloudinary URL SDK
-                    if CLOUDINARY_CLOUD_NAME:
-                        try:
-                            transformed_image = CloudinaryImage(selected_public_id)
-                            transformed_url = transformed_image.build_url(transformation=transformation_list)
-                            
-                            st.image(transformed_url, caption=f"Mutated Output URL: {selected_public_id}", use_container_width=True)
-                            st.code(transformed_url, language="text")
-                        except Exception as cloud_err:
-                            st.error(f"Cloudinary rendering issue: {cloud_err}")
-                    else:
-                        st.warning("Provide Cloudinary credentials to generate your preview image link.")
+                    try:
+                        transformed_image = CloudinaryImage(selected_public_id)
+                        transformed_url = transformed_image.build_url(transformation=transformation_list)
                         
-                # Show record provenance data
+                        st.image(transformed_url, caption="Mutated Transformation Output", use_container_width=True)
+                        st.code(transformed_url, language="text")
+                    except Exception as cloud_err:
+                        st.error(f"Cloudinary rendering issue: {cloud_err}")
+                        
                 with st.expander("🗄️ Stored MongoDB Metadata Document"):
                     st.json(str(img_metadata))
             else:
@@ -132,7 +125,7 @@ with tabs[0]:
         except Exception as query_err:
             st.error(f"Error querying records: {query_err}")
     else:
-        st.error("Establish a database connection via the sidebar menu first.")
+        st.error("Could not link application layers. Verify your MongoDB configuration string settings.")
 
 # -----------------------------------------------------------------------------
 # TAB 2: UPLOAD ASSET & SAVE METADATA
@@ -145,21 +138,19 @@ with tabs[1]:
     uploaded_file = st.file_uploader("Choose an image file...", type=["jpg", "jpeg", "png", "webp"])
     
     if st.button("🚀 Upload and Index Asset"):
-        if not CLOUDINARY_CLOUD_NAME or collection is None:
-            st.error("Both Cloudinary configurations and MongoDB connections are strictly required to upload files.")
+        if collection is None:
+            st.error("Active database connection is required to index metadata.")
         elif not upload_title or not uploaded_file:
             st.error("Please provide both an asset title reference and a valid file payload.")
         else:
-            with st.spinner("Processing file streaming..."):
+            with st.spinner("Uploading binary stream directly to Cloudinary target buckets..."):
                 try:
-                    # Upload byte stream explicitly directly to Cloudinary storage buckets
                     upload_result = cloudinary.uploader.upload(
                         uploaded_file,
-                        folder=f"{DB_NAME}/uploads",
+                        folder=f"{CONFIG['DB_NAME']}/uploads",
                         tags=[t.strip() for t in tags.split(",") if t.strip()]
                     )
                     
-                    # Extract valuable transaction parameters
                     metadata_payload = {
                         "title": upload_title,
                         "public_id": upload_result.get("public_id"),
@@ -170,37 +161,28 @@ with tabs[1]:
                         "tags": upload_result.get("tags", [])
                     }
                     
-                    # Atomic injection into MongoDB document layer
-                    insert_res = collection.insert_one(metadata_payload)
-                    
-                    st.success(f"Successfully uploaded asset to Cloudinary and registered metadata entry in MongoDB!")
+                    collection.insert_one(metadata_payload)
+                    st.success(f"🎉 '{upload_title}' successfully uploaded to Cloudinary and indexed in MongoDB!")
                     st.balloons()
-                    st.json(metadata_payload)
                     
                 except Exception as upload_err:
-                    st.error(f"Transaction pipeline failed: {upload_err}")
+                    st.error(f"Upload Ingestion Pipeline failed: {upload_err}")
 
 # -----------------------------------------------------------------------------
-# TAB 3: MANAGE RECORDS DIRECTLY
+# TAB 3: VIEW DATABASE RECORDS
 # -----------------------------------------------------------------------------
 with tabs[2]:
-    st.subheader("Stored Document Context Layer")
+    st.subheader("📋 MongoDB Metadata Records Index")
     if collection is not None:
         try:
             all_records = list(collection.find({}))
             if all_records:
                 for doc in all_records:
                     with st.container(border=True):
-                        st.markdown(f"#### **{doc.get('title', 'Untitled')}** (`{doc.get('public_id')}`)")
-                        st.markdown(f"**Original Cloudinary Resource String:** [{doc.get('secure_url')}]({doc.get('secure_url')})")
-                        st.markdown(f"**Format:** `{doc.get('format')}` | **Size:** `{doc.get('bytes', 0) / 1024:.2f} KB`")
-                        if st.button(f"🗑️ Delete Record", key=f"del_{doc.get('public_id')}"):
-                            collection.delete_one({"public_id": doc.get('public_id')})
-                            st.toast(f"Removed reference record {doc.get('public_id')}")
-                            st.rerun()
+                        st.markdown(f"#### 📄 {doc.get('title', 'Untitled Asset')}")
+                        st.markdown(f"**Public ID:** `{doc.get('public_id')}`")
+                        st.markdown(f"**Direct URL Link:** [Open Resource]({doc.get('secure_url')})")
             else:
-                st.info("The selected collection data layer contains zero indexing documents.")
-        except Exception as e:
-            st.error(f"Error querying data tables: {e}")
-    else:
-        st.info("Connect your active cluster node to browse structural datasets.")
+                st.info("No documents present inside the collection database index.")
+        except Exception as err:
+            st.error(f"Failed to fetch records: {err}")
